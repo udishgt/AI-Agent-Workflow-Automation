@@ -1,0 +1,4 @@
+[
+  {"order_id": "ORD1001", "shipment_status": "label_created", "tracking_number": "TRK1001"},
+  {"order_id": "ORD1002", "shipment_status": "in_transit", "tracking_number": "TRK1002"}
+]

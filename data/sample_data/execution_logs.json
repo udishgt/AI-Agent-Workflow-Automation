@@ -1,0 +1,5 @@
+[
+  {"workflow_id": "WF001", "status": "success", "duration_seconds": 3.2, "error": "", "step": "Load inventory"},
+  {"workflow_id": "WF002", "status": "failed", "duration_seconds": 8.5, "error": "vendor file unavailable", "step": "Load prices"},
+  {"workflow_id": "WF001", "status": "success", "duration_seconds": 4.1, "error": "", "step": "Generate report"}
+]

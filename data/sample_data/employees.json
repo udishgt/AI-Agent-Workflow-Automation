@@ -1,0 +1,4 @@
+[
+  {"employee_id": "E100", "name": "Alex Kim", "skills": ["support", "orders"], "workload": 2, "capacity": 5},
+  {"employee_id": "E101", "name": "Riley Chen", "skills": ["catalog", "data"], "workload": 4, "capacity": 5}
+]

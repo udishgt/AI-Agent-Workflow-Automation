@@ -1,0 +1,4 @@
+sku,product_name,current_stock,minimum_stock,unit_price
+P100,Wireless Mouse,4,10,24.99
+P101,USB Keyboard,18,10,39.99
+P102,USB-C Hub,2,5,49.99
