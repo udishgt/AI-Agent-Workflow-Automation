@@ -2,6 +2,7 @@
 
 import json
 import re
+from typing import Any
 
 from app.agent import Agent
 from app.llm_client import LLMClientError, OpenAICompatibleClient
@@ -48,6 +49,166 @@ class DemoLLM:
         })
 
 
+def _json_safe(value: Any, active_ids: set[int] | None = None):
+    """Create a display-only JSON-compatible copy without mutating the result."""
+    active_ids = set() if active_ids is None else active_ids
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    value_id = id(value)
+    if value_id in active_ids:
+        return "[repeated nested value omitted]"
+    active_ids.add(value_id)
+    try:
+        if isinstance(value, dict):
+            return {
+                str(key): _json_safe(item, active_ids)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple, set)):
+            return [_json_safe(item, active_ids) for item in value]
+        return str(value)
+    finally:
+        active_ids.remove(value_id)
+
+
+def _nested_dicts(value: Any, active_ids: set[int] | None = None) -> list[dict[str, Any]]:
+    """Collect nested dictionaries without recursing forever through cycles."""
+    active_ids = set() if active_ids is None else active_ids
+    if not isinstance(value, (dict, list, tuple, set)):
+        return []
+    value_id = id(value)
+    if value_id in active_ids:
+        return []
+    active_ids.add(value_id)
+    try:
+        if isinstance(value, dict):
+            found = [value]
+            children = value.values()
+        else:
+            found = []
+            children = value
+        for child in children:
+            found.extend(_nested_dicts(child, active_ids))
+        return found
+    finally:
+        active_ids.remove(value_id)
+
+
+def _as_number(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _unique_records(records: list[dict[str, Any]], key_fields: tuple[str, ...]) -> list[dict[str, Any]]:
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for record in records:
+        key = tuple(record.get(field) for field in key_fields)
+        if any(value is not None for value in key) and key not in seen:
+            seen.add(key)
+            unique.append(record)
+    return unique
+
+
+def _format_final_result(execution) -> str:
+    """Create a generic business-readable view of execution output."""
+    sources = [execution.final_output]
+    sources.extend(step.result for step in execution.steps_executed if step.result is not None)
+    records = _nested_dicts(sources)
+
+    inventory = _unique_records(
+        [
+            record for record in records
+            if {"sku", "product_name", "current_stock", "minimum_stock"} <= record.keys()
+        ],
+        ("sku",),
+    )
+    low_stock = [
+        record for record in inventory
+        if (_as_number(record["current_stock"]) is not None
+            and _as_number(record["minimum_stock"]) is not None
+            and _as_number(record["current_stock"]) < _as_number(record["minimum_stock"]))
+    ]
+    if low_stock:
+        lines = [f"Restock required for {len(low_stock)} products:"]
+        for record in low_stock:
+            reorder = record.get("reorder_quantity")
+            if reorder is None:
+                current = _as_number(record["current_stock"])
+                minimum = _as_number(record["minimum_stock"])
+                reorder = minimum - current if current is not None and minimum is not None else "unknown"
+            lines.append(
+                f"- {record['product_name']} ({record['sku']}): "
+                f"current stock {record['current_stock']}, minimum {record['minimum_stock']}, "
+                f"reorder {reorder:g}" if isinstance(reorder, float) else
+                f"- {record['product_name']} ({record['sku']}): "
+                f"current stock {record['current_stock']}, minimum {record['minimum_stock']}, "
+                f"reorder {reorder}"
+            )
+        return "\n".join(lines)
+
+    flagged_price_records = [
+        item
+        for record in records
+        if record.get("flagged") is True and isinstance(record.get("records"), list)
+        for item in record["records"]
+        if isinstance(item, dict)
+    ]
+    prices = _unique_records(
+        [
+            record for record in records
+            if {"sku", "percentage_difference"} <= record.keys()
+            and ("vendor_price" in record or "internal_price" in record)
+        ],
+        ("sku",),
+    )
+    flagged_prices = _unique_records(
+        [
+            record for record in flagged_price_records
+            if {"sku", "percentage_difference"} <= record.keys()
+        ],
+        ("sku",),
+    )
+    if flagged_prices:
+        prices = flagged_prices
+    if prices:
+        lines = [f"Price validation found {len(prices)} exception(s):"]
+        for record in prices:
+            percentage = _as_number(record.get("percentage_difference"))
+            percentage_text = f"{percentage:.2f}" if percentage is not None else str(
+                record.get("percentage_difference")
+            )
+            lines.append(
+                f"- {record.get('product_name', record['sku'])} ({record['sku']}): "
+                f"{percentage_text}% difference "
+                f"(internal {record.get('internal_price')}, vendor {record.get('vendor_price')})"
+            )
+        return "\n".join(lines)
+
+    orders = _unique_records(
+        [
+            record for record in records
+            if "order_id" in record and ("status" in record or "shipment_status" in record)
+        ],
+        ("order_id", "status", "shipment_status", "tracking_number"),
+    )
+    if orders:
+        lines = ["Order status:"]
+        for record in orders:
+            details = [f"status {record['status']}"] if "status" in record else []
+            if "shipment_status" in record:
+                details.append(f"shipment {record['shipment_status']}")
+            if "tracking_number" in record:
+                details.append(f"tracking {record['tracking_number']}")
+            lines.append(f"- {record['order_id']}: {', '.join(details)}")
+        return "\n".join(lines)
+
+    display_value = _json_safe(execution.final_output)
+    return json.dumps(display_value, indent=2, ensure_ascii=False)
+
+
 def _display_result(result) -> None:
     print(f"Selected Workflow: {result.workflow_id} - {result.workflow_name}")
     print(f"Selection Reason: {result.selection_reason}")
@@ -58,7 +219,8 @@ def _display_result(result) -> None:
             print(f"- {step.name}: {step.status}")
         print(f"Tools Used: {', '.join(result.execution.tools_used) or 'None'}")
         print(f"Decisions: {result.execution.decisions or 'None'}")
-        print(f"Final Result: {result.execution.final_output}")
+        print("Final Result:")
+        print(_format_final_result(result.execution))
         if result.execution.errors:
             print(f"Errors: {result.execution.errors}")
     elif result.errors:
